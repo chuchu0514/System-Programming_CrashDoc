@@ -1,55 +1,18 @@
-# Prerequisites
-*.d
-
-# Object files
+# 빌드 결과물
 *.o
-*.ko
-*.obj
-*.elf
+crashdoc
+crashdoc-server
+tests/*
+!tests/*.c
+!tests/.gitkeep
 
-# Linker output
-*.ilk
-*.map
-*.exp
+# 실행 중 생기는 것
+records/
+logs/
+core
+core.*
 
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
-
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
-
-# debug information files
-*.dwo
+# 비밀
+.env
+*.key
+*:Zone.Identifier
