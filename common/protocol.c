@@ -44,10 +44,48 @@ int send_msg(int fd, uint8_t type, const char *body, uint32_t len)
     return 0;
 }
 
+/* fd에서 정확히 n바이트를 buf에 읽는다. 성공 0, 실패·끊김 -1 */
+static int read_all(int fd, void *buf, size_t n)
+{
+    char *p = buf;
+    size_t left = n;
+
+    while (left > 0) {
+        ssize_t r = read(fd, p, left);
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (r == 0)         
+            return -1;
+        p += r;
+        left -= r;
+    }
+    return 0;
+}
+
 int recv_msg(int fd, uint8_t *type, char *body, uint32_t bodysz)
 {
-    (void)fd; (void)type; (void)body; (void)bodysz;
-    return -1; /* TODO */
+    unsigned char hdr[5];
+    uint32_t netlen, len;
+
+    if (read_all(fd, hdr, 5) < 0)      /* 1. 송장 읽기 */
+        return -1;
+
+    memcpy(&netlen, hdr, 4);           /* 2. 앞 4바이트 꺼내서 */
+    len = ntohl(netlen);               /*    내 기계 순서로 */
+    *type = hdr[4];
+
+    if (len > MSG_MAX_BODY)            /* 3. 길이 검사 */
+        return -1;
+    if (len >= bodysz)                 /*    '\0' 자리까지 들어가야 함 */
+        return -1;
+
+    if (len > 0 && read_all(fd, body, len) < 0)   /* 4. 본문 읽기 */
+        return -1;
+    body[len] = '\0';
+    return (int)len;
 }
 
 int crash_info_encode(const crash_info *in, char *out, size_t outsz)
