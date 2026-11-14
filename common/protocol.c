@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>   /* htonl, ntohl */
 #include <string.h>      /* memcpy */
+#include <stdio.h>
 
 /* buf의 n바이트를 fd에 전부 쓴다. 성공 0, 실패 -1 */
 static int write_all(int fd, const void *buf, size_t n)
@@ -90,8 +91,21 @@ int recv_msg(int fd, uint8_t *type, char *body, uint32_t bodysz)
 
 int crash_info_encode(const crash_info *in, char *out, size_t outsz)
 {
-    (void)in; (void)out; (void)outsz;
-    return -1; /* TODO */
+    int n = snprintf(out, outsz,
+                     "cmd=%s\n"
+                     "signal=%d\n"
+                     "exit_code=%d\n"
+                     "timed_out=%d\n"
+                     "elapsed_ms=%ld\n"
+                     "maxrss_kb=%ld\n"
+                     "\n"                  /* 빈 줄 = 헤더 끝 */
+                     "%s",                 /* 마지막 출력 원문 */
+                     in->cmd, in->signo, in->exit_code, in->timed_out,
+                     in->elapsed_ms, in->maxrss_kb, in->last_output);
+
+    if (n < 0 || (size_t)n >= outsz)   /* 에러거나 잘림 */
+        return -1;
+    return n;
 }
 
 int crash_info_decode(const char *body, crash_info *out)
