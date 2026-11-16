@@ -8,6 +8,7 @@
 #include "protocol.h"
 #include "analyzer.h"
 #include "store.h"
+#include <pthread.h>
 
 /* port 번호로 연결을 받을 준비가 된 듣는 소켓을 만든다. 실패 -1 */
 static int open_listen(int port)
@@ -37,10 +38,29 @@ static int open_listen(int port)
     return fd;
 }
 
+/* 손님 한 명을 맡는 작업 스레드 */
+static void *handle_client(void *arg)
+{
+    int fd = *(int *)arg;             
+    char buf[MSG_MAX_BODY + 1];        
+    uint8_t type;
+    static const char reply[] =
+        "원인 추정: (임시 서버) 아직 분석기가 연결되지 않았습니다\n"
+        "점검: 서버 연동 테스트용 고정 응답입니다\n";
+
+    free(arg);                         
+
+    if (recv_msg(fd, &type, buf, sizeof(buf)) >= 0) {
+        send_msg(fd, MSG_RESULT, reply, strlen(reply));
+    }
+
+    close(fd);
+    return NULL;
+}
+
 int main(int argc, char *argv[])
 {
     int listen_fd;
-    char buf[MSG_MAX_BODY + 1];      
     if (argc < 2) {
         fprintf(stderr, "사용법: crashdoc-server <포트> [--analyzer rule|api|local]\n");
         return 1;
@@ -53,20 +73,26 @@ int main(int argc, char *argv[])
     }
 
     for (;;) {
-        int conn_fd;
-        uint8_t type;
-        static const char reply[] =
-            "원인 추정: (임시 서버) 아직 분석기가 연결되지 않았습니다\n"
-            "점검: 서버 연동 테스트용 고정 응답입니다\n";
+        int conn_fd, *p;
+        pthread_t tid;
 
-        conn_fd = accept(listen_fd, NULL, NULL);         
+        conn_fd = accept(listen_fd, NULL, NULL);
         if (conn_fd < 0)
             continue;
 
-        if (recv_msg(conn_fd, &type, buf, sizeof(buf)) >= 0)
-            send_msg(conn_fd, MSG_RESULT, reply, strlen(reply));
+        p = malloc(sizeof(int));                
+        if (p == NULL) {
+            close(conn_fd);
+            continue;
+        }
+        *p = conn_fd;
 
-        close(conn_fd);                                    
+        if (pthread_create(&tid, NULL, handle_client, p) != 0) { //0이 성공임
+            free(p);
+            close(conn_fd);
+            continue;
+        }
+        pthread_detach(tid);                     
     }
 
     close(listen_fd);
