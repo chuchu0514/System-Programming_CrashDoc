@@ -38,20 +38,76 @@ static int open_listen(int port)
     return fd;
 }
 
-/* 손님 한 명을 맡는 작업 스레드 */
+
+/* ANALYZE: 크래시 정보 해석 → 분석 → 기록 */
+static int handle_analyze(const char *body, char *out, size_t outsz)
+{
+    crash_info ci;
+
+    if (crash_info_decode(body, &ci) < 0)      /* 텍스트 → 구조체 */
+        return -1;
+    if (analyze_crash(&ci, out, outsz) < 0)    /* 분석 결과를 out에 */
+        return -1;
+    store_save(&ci, out, "unknown");           /* 기록 저장 */
+    return 0;
+}
+
+/* BUILD: gcc 에러 텍스트 → 분석 */
+static int handle_build(const char *body, char *out, size_t outsz)
+{
+    return analyze_build(body, out, outsz);
+}
+
+/* HISTORY: 최근 n개 목록 */
+static int handle_history(const char *body, char *out, size_t outsz)
+{
+    int n;
+
+    if (sscanf(body, "n=%d", &n) != 1 || n <= 0)
+        return -1;
+    return store_list(n, out, outsz);
+}
+
+/* SHOW: "id=12" → 기록 하나 */
+static int handle_show(const char *body, char *out, size_t outsz)
+{
+    int id;
+
+    if (sscanf(body, "id=%d", &id) != 1)
+        return -1;
+    return store_show(id, out, outsz);
+}
+
+
 static void *handle_client(void *arg)
 {
-    int fd = *(int *)arg;             
-    char buf[MSG_MAX_BODY + 1];        
+    int fd = *(int *)arg;
+    char buf[MSG_MAX_BODY + 1];      /* 받은 본문 */
+    char out[MSG_MAX_BODY];          /* 보낼 답장 */
     uint8_t type;
-    static const char reply[] =
-        "원인 추정: (임시 서버) 아직 분석기가 연결되지 않았습니다\n"
-        "점검: 서버 연동 테스트용 고정 응답입니다\n";
+    int r;
 
-    free(arg);                         
+    free(arg);
 
-    if (recv_msg(fd, &type, buf, sizeof(buf)) >= 0) {
-        send_msg(fd, MSG_RESULT, reply, strlen(reply));
+    if (recv_msg(fd, &type, buf, sizeof(buf)) < 0) {   
+        close(fd);
+        return NULL;
+    }
+
+    out[0] = '\0';
+    switch (type) {                                     
+    case MSG_ANALYZE: r = handle_analyze(buf, out, sizeof(out)); break;
+    case MSG_BUILD:   r = handle_build(buf, out, sizeof(out));   break;
+    case MSG_HISTORY: r = handle_history(buf, out, sizeof(out)); break;
+    case MSG_SHOW:    r = handle_show(buf, out, sizeof(out));    break;
+    default:          r = -1;                                    break;
+    }
+
+    if (r == 0) {
+        send_msg(fd, MSG_RESULT, out, strlen(out));
+    } else {
+        static const char err[] = "서버가 요청을 처리하지 못했습니다\n";
+        send_msg(fd, MSG_ERROR, err, strlen(err));
     }
 
     close(fd);
