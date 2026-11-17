@@ -9,6 +9,7 @@
 #include "analyzer.h"
 #include "store.h"
 #include <pthread.h>
+#include "stats.h"
 
 /* port 번호로 연결을 받을 준비가 된 듣는 소켓을 만든다. 실패 -1 */
 static int open_listen(int port)
@@ -38,6 +39,7 @@ static int open_listen(int port)
     return fd;
 }
 
+/*handle함수들은 성공하면 0, 실패 -1임*/
 
 /* ANALYZE: 크래시 정보 해석 → 분석 → 기록 */
 static int handle_analyze(const char *body, char *out, size_t outsz)
@@ -46,6 +48,7 @@ static int handle_analyze(const char *body, char *out, size_t outsz)
 
     if (crash_info_decode(body, &ci) < 0)      /* 텍스트 → 구조체 */
         return -1;
+    stats_crash(ci.signo);
     if (analyze_crash(&ci, out, outsz) < 0)    /* 분석 결과를 out에 */
         return -1;
     store_save(&ci, out, "unknown");           /* 기록 저장 */
@@ -88,8 +91,10 @@ static void *handle_client(void *arg)
     int r;
 
     free(arg);
+    stats_begin();
 
     if (recv_msg(fd, &type, buf, sizeof(buf)) < 0) {   
+        stats_end(0); /* 0은 실패 */
         close(fd);
         return NULL;
     }
@@ -110,6 +115,7 @@ static void *handle_client(void *arg)
         send_msg(fd, MSG_ERROR, err, strlen(err));
     }
 
+    stats_end(r == 0);
     close(fd);
     return NULL;
 }
