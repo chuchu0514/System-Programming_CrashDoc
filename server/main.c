@@ -11,6 +11,12 @@
 #include <pthread.h>
 #include "stats.h"
 
+typedef struct{
+
+    int fd;
+    char ip[INET_ADDRSTRLEN];
+}client_arg;
+
 /* port 번호로 연결을 받을 준비가 된 듣는 소켓을 만든다. 실패 -1 */
 static int open_listen(int port)
 {
@@ -42,7 +48,7 @@ static int open_listen(int port)
 /*handle함수들은 성공하면 0, 실패 -1임*/
 
 /* ANALYZE: 크래시 정보 해석 → 분석 → 기록 */
-static int handle_analyze(const char *body, char *out, size_t outsz)
+static int handle_analyze(const char *body, const char *ip, char *out, size_t outsz)
 {
     crash_info ci;
 
@@ -51,7 +57,7 @@ static int handle_analyze(const char *body, char *out, size_t outsz)
     stats_crash(ci.signo);
     if (analyze_crash(&ci, out, outsz) < 0)    /* 분석 결과를 out에 */
         return -1;
-    store_save(&ci, out, "unknown");           /* 기록 저장 */
+    store_save(&ci, out, ip);           /* 기록 저장 */
     return 0;
 }
 
@@ -84,13 +90,16 @@ static int handle_show(const char *body, char *out, size_t outsz)
 
 static void *handle_client(void *arg)
 {
-    int fd = *(int *)arg;
-    char buf[MSG_MAX_BODY + 1];      /* 받은 본문 */
-    char out[MSG_MAX_BODY];          /* 보낼 답장 */
+    client_arg *ca = arg;                 /*arg는 ca..*/
+    int fd = ca->fd;                      
+    char ip[INET_ADDRSTRLEN];
+    char buf[MSG_MAX_BODY + 1];
+    char out[MSG_MAX_BODY];
     uint8_t type;
     int r;
 
-    free(arg);
+    memcpy(ip, ca->ip, sizeof(ip));       
+    free(ca);                             
     stats_begin();
 
     if (recv_msg(fd, &type, buf, sizeof(buf)) < 0) {   
@@ -101,7 +110,7 @@ static void *handle_client(void *arg)
 
     out[0] = '\0';
     switch (type) {                                     
-    case MSG_ANALYZE: r = handle_analyze(buf, out, sizeof(out)); break;
+    case MSG_ANALYZE: r = handle_analyze(buf, ip, out, sizeof(out)); break;
     case MSG_BUILD:   r = handle_build(buf, out, sizeof(out));   break;
     case MSG_HISTORY: r = handle_history(buf, out, sizeof(out)); break;
     case MSG_SHOW:    r = handle_show(buf, out, sizeof(out));    break;
@@ -135,26 +144,30 @@ int main(int argc, char *argv[])
     }
 
     for (;;) {
-        int conn_fd, *p;
+        int conn_fd;
         pthread_t tid;
+        struct sockaddr_in caddr;
+        socklen_t clen = sizeof(caddr);
+        client_arg *ca;
 
-        conn_fd = accept(listen_fd, NULL, NULL);
+        conn_fd = accept(listen_fd, (struct sockaddr *)&caddr, &clen);
         if (conn_fd < 0)
             continue;
 
-        p = malloc(sizeof(int));                
-        if (p == NULL) {
+        ca = malloc(sizeof(*ca));                
+        if (ca == NULL) {
             close(conn_fd);
             continue;
         }
-        *p = conn_fd;
+        ca->fd = conn_fd;
+        inet_ntop(AF_INET, &caddr.sin_addr, ca->ip, sizeof(ca->ip));
 
-        if (pthread_create(&tid, NULL, handle_client, p) != 0) { //0이 성공임
-            free(p);
+        if (pthread_create(&tid, NULL, handle_client, ca) != 0) {
+            free(ca);
             close(conn_fd);
             continue;
         }
-        pthread_detach(tid);                     
+        pthread_detach(tid);
     }
 
     close(listen_fd);
