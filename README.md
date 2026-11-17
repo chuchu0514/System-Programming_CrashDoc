@@ -38,4 +38,3 @@ make clean
 | `server/analyzer/` | 분석기 (규칙 기반 + LLM) | 김경민 |
 | `server/store/` | 크래시 기록 | 김경민 |
 | `tests/` | 일부러 죽는 테스트 프로그램 | 최완호 |
-"최완호 실습"
