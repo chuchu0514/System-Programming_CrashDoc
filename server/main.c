@@ -125,7 +125,7 @@ static void *handle_client(void *arg)
         static const char err[] = "서버가 요청을 처리하지 못했습니다\n";
         send_msg(fd, MSG_ERROR, err, strlen(err));
     }
-    
+
     log_msg("처리 %s type=%d → %s", ip, type, r == 0 ? "RESULT" : "ERROR");
     stats_end(r == 0);
     close(fd);
@@ -134,7 +134,7 @@ static void *handle_client(void *arg)
 
 static void usage(void)
 {
-    fprintf(stderr, "사용법: crashdoc-server <포트> [--analyzer rule|local]\n");
+    fprintf(stderr, "사용법: crashdoc-server <포트> [--no-llm]\n");
 }
 
 int main(int argc, char *argv[])
@@ -142,7 +142,7 @@ int main(int argc, char *argv[])
     int listen_fd;
     int port;
     int i;
-    const char *mode = "rule";             
+    int use_llm = 1;                        
 
     if (argc < 2) {
         usage();
@@ -150,31 +150,25 @@ int main(int argc, char *argv[])
     }
 
     port = atoi(argv[1]);
-    if (port <= 0 || port > 65535) {        
+    if (port <= 0 || port > 65535) {
         usage();
         return 1;
     }
 
     for (i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--analyzer") == 0 && i + 1 < argc) {
-            mode = argv[++i];              
+        if (strcmp(argv[i], "--no-llm") == 0) {
+            use_llm = 0;
         } else {
-            usage();                        
+            usage();                       
             return 1;
         }
-    }
-
-    if (strcmp(mode, "rule") != 0 &&
-        strcmp(mode, "local") != 0) {
-        usage();
-        return 1;
     }
 
     if (log_open() < 0) {
         perror("log_open");
         return 1;
     }
-    log_msg("서버 시작 port=%d mode=%s", port, mode);
+    log_msg("서버 시작 port=%d llm=%s", port, use_llm ? "on" : "off");
 
     listen_fd = open_listen(port);
 
