@@ -10,6 +10,7 @@
 #include "store.h"
 #include <pthread.h>
 #include "stats.h"
+#include "log.h"
 
 typedef struct{
 
@@ -102,8 +103,9 @@ static void *handle_client(void *arg)
     free(ca);                             
     stats_begin();
 
-    if (recv_msg(fd, &type, buf, sizeof(buf)) < 0) {   
-        stats_end(0); /* 0은 실패 */
+    if (recv_msg(fd, &type, buf, sizeof(buf)) < 0) {
+        log_msg("수신 실패 %s", ip);
+        stats_end(0);
         close(fd);
         return NULL;
     }
@@ -123,22 +125,61 @@ static void *handle_client(void *arg)
         static const char err[] = "서버가 요청을 처리하지 못했습니다\n";
         send_msg(fd, MSG_ERROR, err, strlen(err));
     }
-
+    
+    log_msg("처리 %s type=%d → %s", ip, type, r == 0 ? "RESULT" : "ERROR");
     stats_end(r == 0);
     close(fd);
     return NULL;
 }
 
+static void usage(void)
+{
+    fprintf(stderr, "사용법: crashdoc-server <포트> [--analyzer rule|local]\n");
+}
+
 int main(int argc, char *argv[])
 {
     int listen_fd;
+    int port;
+    int i;
+    const char *mode = "rule";             
+
     if (argc < 2) {
-        fprintf(stderr, "사용법: crashdoc-server <포트> [--analyzer rule|api|local]\n");
+        usage();
         return 1;
     }
 
-    listen_fd = open_listen(atoi(argv[1]));
+    port = atoi(argv[1]);
+    if (port <= 0 || port > 65535) {        
+        usage();
+        return 1;
+    }
+
+    for (i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--analyzer") == 0 && i + 1 < argc) {
+            mode = argv[++i];              
+        } else {
+            usage();                        
+            return 1;
+        }
+    }
+
+    if (strcmp(mode, "rule") != 0 &&
+        strcmp(mode, "local") != 0) {
+        usage();
+        return 1;
+    }
+
+    if (log_open() < 0) {
+        perror("log_open");
+        return 1;
+    }
+    log_msg("서버 시작 port=%d mode=%s", port, mode);
+
+    listen_fd = open_listen(port);
+
     if (listen_fd < 0) {
+        log_msg("open_listen 실패 port=%d", port);
         perror("open_listen");
         return 1;
     }
@@ -161,6 +202,7 @@ int main(int argc, char *argv[])
         }
         ca->fd = conn_fd;
         inet_ntop(AF_INET, &caddr.sin_addr, ca->ip, sizeof(ca->ip));
+        log_msg("접속 %s", ca->ip); 
 
         if (pthread_create(&tid, NULL, handle_client, ca) != 0) {
             free(ca);
