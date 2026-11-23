@@ -11,6 +11,8 @@
 #include <pthread.h>
 #include "stats.h"
 #include "log.h"
+#include <signal.h>
+
 
 typedef struct{
 
@@ -120,10 +122,12 @@ static void *handle_client(void *arg)
     }
 
     if (r == 0) {
-        send_msg(fd, MSG_RESULT, out, strlen(out));
+        if (send_msg(fd, MSG_RESULT, out, strlen(out)) < 0)
+            log_msg("송신 실패 %s (손님이 먼저 끊음)", ip);
     } else {
         static const char err[] = "서버가 요청을 처리하지 못했습니다\n";
-        send_msg(fd, MSG_ERROR, err, strlen(err));
+        if (send_msg(fd, MSG_ERROR, err, strlen(err)) < 0)
+            log_msg("송신 실패 %s (손님이 먼저 끊음)", ip);
     }
 
     log_msg("처리 %s type=%d → %s", ip, type, r == 0 ? "RESULT" : "ERROR");
@@ -143,6 +147,7 @@ int main(int argc, char *argv[])
     int port;
     int i;
     int use_llm = 1;                        
+    signal(SIGPIPE, SIG_IGN);          
 
     if (argc < 2) {
         usage();
