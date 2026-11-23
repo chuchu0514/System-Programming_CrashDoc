@@ -1,8 +1,12 @@
+#define _GNU_SOURCE
+
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <pty.h>
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -159,6 +163,19 @@ static void format_command(char *out, size_t size, char *const argv[])
     out[used] = '\0';
 }
 
+static void print_crash_summary(const crash_info *info)
+{
+    printf("\n종료 원인: ");
+    if (info->signo != 0)
+        printf("%s (시그널 %d)\n", strsignal(info->signo), info->signo);
+    else
+        printf("종료 코드 %d\n", info->exit_code);
+
+    printf("실행 시간: %ld ms\n", info->elapsed_ms);
+    printf("최대 메모리 사용량: %ld KB\n", info->maxrss_kb);
+    fflush(stdout);
+}
+
 int run_program(char *const argv[], const struct server_address *server)
 {
     const int signals[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGPIPE };
@@ -172,6 +189,8 @@ int run_program(char *const argv[], const struct server_address *server)
     int terminal = isatty(STDIN_FILENO);
     int raw_enabled = 0;
     int master = -1;
+    int exec_pipe[2] = { -1, -1 };
+    int exec_error = 0;
     int status, saved_errno, reaped = 0, result = 1;
     size_t installed = 0;
     pid_t pid = -1;
@@ -191,6 +210,12 @@ int run_program(char *const argv[], const struct server_address *server)
         }
     }
 
+    /* exec 성공 시 쓰기 끝이 닫히고, 실패 시 자식이 errno를 보낸다. */
+    if (pipe2(exec_pipe, O_CLOEXEC) < 0) {
+        error = "pipe2";
+        goto cleanup;
+    }
+
     if (clock_gettime(CLOCK_MONOTONIC, &start) < 0) {
         error = "clock_gettime";
         goto cleanup;
@@ -204,12 +229,18 @@ int run_program(char *const argv[], const struct server_address *server)
         goto cleanup;
     }
     if (pid == 0) {
+        close(exec_pipe[0]);
         for (size_t i = 0; i < installed; ++i)
             sigaction(signals[i], &previous[i], NULL);
         execvp(argv[0], argv);
-        perror(argv[0]);
+        int failure = errno;
+        while (write(exec_pipe[1], &failure, sizeof(failure)) < 0 && errno == EINTR)
+            continue;
         _exit(127);
     }
+
+    close(exec_pipe[1]);
+    exec_pipe[1] = -1;
 
     /* 부모 터미널을 raw 모드로 바꿔 키 입력을 그대로 넘긴다. */
     if (terminal) {
@@ -228,6 +259,21 @@ int run_program(char *const argv[], const struct server_address *server)
     }
 
     result = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    /* 자식을 회수했으므로 파이프에는 errno 또는 EOF가 남아 있다. */
+    ssize_t received;
+    do {
+        received = read(exec_pipe[0], &exec_error, sizeof(exec_error));
+    } while (received < 0 && errno == EINTR && !interrupted);
+    if (received < 0 || (received != 0 && received != sizeof(exec_error))) {
+        if (received > 0)
+            errno = EIO;
+        error = "execvp 상태 확인";
+        result = 1;
+        goto cleanup;
+    }
+    if (received != 0)
+        goto cleanup;
+
     info.signo = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
     info.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     info.elapsed_ms = ((end.tv_sec - start.tv_sec) * 1000000000LL
@@ -262,25 +308,33 @@ cleanup:
     }
     if (master >= 0)
         close(master);
+    for (size_t i = 0; i < 2; ++i) {
+        if (exec_pipe[i] >= 0)
+            close(exec_pipe[i]);
+    }
 
     while (installed > 0) {
         --installed;
         sigaction(signals[installed], &previous[installed], NULL);
     }
-    /* 서버에 연결하기 전에 수집 정보를 화면에 남긴다. */
-    if (reaped && (info.signo != 0 || info.exit_code != 0) && !interrupted) {
+    if (interrupted)
+        return 128 + interrupted;
+    if (exec_error != 0 && !error) {
+        fprintf(stderr, "실행 실패: %s: %s\n", argv[0], strerror(exec_error));
+        return result;
+    }
+
+    /* 마지막 출력은 서버에 보내는 본문에만 넣는다. */
+    if (reaped && (info.signo != 0 || info.exit_code != 0)) {
+        print_crash_summary(&info);
         char body[sizeof(info) + 128];
         int length = crash_info_encode(&info, body, sizeof(body));
         if (length < 0) {
             fprintf(stderr, "크래시 정보를 인코딩할 수 없습니다.\n");
         } else {
-            printf("\n%s", body);
-            if (length > 0 && body[length - 1] != '\n')
-                putchar('\n');
-            fflush(stdout);
             request_analysis(server, body, (uint32_t)length);
         }
     }
 
-    return interrupted ? 128 + interrupted : result;
+    return result;
 }

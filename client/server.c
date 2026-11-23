@@ -1,4 +1,3 @@
-#include <errno.h>
 #include <netdb.h>
 #include <signal.h>
 #include <stdio.h>
@@ -47,35 +46,28 @@ static int connect_server(const struct server_address *address)
 {
     struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
     struct addrinfo *addresses;
-    int error = getaddrinfo(address->host, address->port, &hints, &addresses);
-    if (error != 0) {
-        fprintf(stderr, "서버에 연결할 수 없습니다: %s\n", gai_strerror(error));
+    if (getaddrinfo(address->host, address->port, &hints, &addresses) != 0)
         return -1;
-    }
 
-    const struct timeval timeout = { .tv_sec = 5 };
+    /* 연결·송신 시간과 서버 응답 대기 시간은 별도로 둔다. */
+    const struct timeval send_timeout = { .tv_sec = 5 };
+    const struct timeval response_timeout = { .tv_sec = 20 };
     int fd = -1;
-    int last_error = ECONNREFUSED;
     for (struct addrinfo *entry = addresses; entry; entry = entry->ai_next) {
         fd = socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);
-        if (fd >= 0) {
-            /* 연결이나 응답이 멈췄을 때 소켓 호출을 제한한다. */
-            if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0 &&
-                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
-                connect(fd, entry->ai_addr, entry->ai_addrlen) == 0)
-                break;
+        if (fd < 0)
+            continue;
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout,
+                       sizeof(send_timeout)) == 0 &&
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &response_timeout,
+                       sizeof(response_timeout)) == 0 &&
+            connect(fd, entry->ai_addr, entry->ai_addrlen) == 0)
+            break;
 
-            last_error = errno == EINPROGRESS ? ETIMEDOUT : errno;
-            close(fd);
-            fd = -1;
-        } else {
-            last_error = errno;
-        }
+        close(fd);
+        fd = -1;
     }
     freeaddrinfo(addresses);
-
-    if (fd < 0)
-        fprintf(stderr, "서버에 연결할 수 없습니다: %s\n", strerror(last_error));
     return fd;
 }
 
@@ -83,8 +75,10 @@ void request_analysis(const struct server_address *address,
                       const char *body, uint32_t length)
 {
     int fd = connect_server(address);
-    if (fd < 0)
+    if (fd < 0) {
+        fputs("서버에 연결할 수 없어 분석을 생략합니다\n", stderr);
         return;
+    }
 
     /* 송신 도중 서버가 연결을 닫아도 자식 종료 코드를 유지한다. */
     struct sigaction ignore = { .sa_handler = SIG_IGN };
