@@ -71,41 +71,57 @@ static int connect_server(const struct server_address *address)
     return fd;
 }
 
-void request_analysis(const struct server_address *address,
-                      const char *body, uint32_t length)
+/* 요청 종류에 관계없이 연결 하나에서 응답 하나를 받는다. */
+int request_server(const struct server_address *address, uint8_t request,
+                   const char *body, uint32_t length)
 {
     int fd = connect_server(address);
     if (fd < 0) {
-        fputs("서버에 연결할 수 없어 분석을 생략합니다\n", stderr);
-        return;
+        fputs(request == MSG_HISTORY || request == MSG_SHOW
+              ? "서버에 연결할 수 없어 기록을 조회하지 못했습니다\n"
+              : "서버에 연결할 수 없어 분석을 생략합니다\n", stderr);
+        return -1;
     }
 
-    /* 송신 도중 서버가 연결을 닫아도 자식 종료 코드를 유지한다. */
+    /* 송신 중 연결이 닫혀도 SIGPIPE로 프로세스가 종료되지 않게 한다. */
     struct sigaction ignore = { .sa_handler = SIG_IGN };
     struct sigaction previous;
     sigemptyset(&ignore.sa_mask);
     if (sigaction(SIGPIPE, &ignore, &previous) < 0) {
         perror("sigaction");
         close(fd);
-        return;
+        return -1;
     }
-    int sent = send_msg(fd, MSG_ANALYZE, body, length);
+    int sent = send_msg(fd, request, body, length);
     sigaction(SIGPIPE, &previous, NULL);
+    if (sent < 0) {
+        fprintf(stderr, "%s\n", request == MSG_ANALYZE
+                ? "서버에 크래시 정보를 보내지 못했습니다."
+                : "서버에 요청을 보내지 못했습니다.");
+        close(fd);
+        return -1;
+    }
 
     char response[MSG_MAX_BODY + 1];
     uint8_t type;
-    if (sent < 0) {
-        fprintf(stderr, "서버에 크래시 정보를 보내지 못했습니다.\n");
-    } else {
-        int count = recv_msg(fd, &type, response, sizeof(response));
-        if (count < 0) {
-            fprintf(stderr, "서버 응답을 받지 못했습니다.\n");
-        } else if (type == MSG_RESULT || type == MSG_ERROR) {
-            /* 응답 본문은 해석 없이 그대로 출력한다. */
-            fwrite(response, 1, (size_t)count, type == MSG_RESULT ? stdout : stderr);
-        } else {
-            fprintf(stderr, "서버가 알 수 없는 응답을 보냈습니다.\n");
-        }
-    }
+    int count = recv_msg(fd, &type, response, sizeof(response));
     close(fd);
+    if (count < 0) {
+        fputs("서버 응답을 받지 못했습니다.\n", stderr);
+    } else if (type == MSG_RESULT || type == MSG_ERROR) {
+        /* 서버가 보낸 본문은 그대로 출력한다. */
+        FILE *output = type == MSG_RESULT ? stdout : stderr;
+        if (fwrite(response, 1, (size_t)count, output) == (size_t)count &&
+            fflush(output) == 0 && type == MSG_RESULT)
+            return 0;
+    } else {
+        fputs("서버가 알 수 없는 응답을 보냈습니다.\n", stderr);
+    }
+    return -1;
+}
+
+void request_analysis(const struct server_address *address,
+                      const char *body, uint32_t length)
+{
+    request_server(address, MSG_ANALYZE, body, length);
 }
