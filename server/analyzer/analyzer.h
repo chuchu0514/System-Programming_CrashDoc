@@ -7,5 +7,7 @@
 void analyzer_init(int use_llm);
 int analyze_crash(const crash_info *in, char *out, size_t outsz);
 int analyze_build(const char *error_text, char *out, size_t outsz);
+int analyze_build_with_source(const char *error_text, const char *source_code,
+                              char *out, size_t outsz);
 
 #endif

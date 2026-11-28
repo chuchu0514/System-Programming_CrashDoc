@@ -39,7 +39,6 @@ static int append_build_location(const char *text, char *location, size_t size)
     location[0] = '\0';
     return 0;
 }
-
 int rule_analyze_crash(const crash_info *in, char *out, size_t outsz)
 {
     const char *type = "비정상 종료";
@@ -86,8 +85,9 @@ int rule_analyze_crash(const crash_info *in, char *out, size_t outsz)
             break;
         case 2:
             signal_name = "SIGINT";
-            cause = "인터럽트 종료 요청을 받아 종료되었습니다.";
-            check = "사용자 입력 또는 실행 환경에서 인터럽트가 발생했는지 확인하세요.";
+            type = "사용자 종료";
+            cause = "SIGINT 인터럽트(보통 Ctrl+C)를 받아 프로그램이 중단되었습니다.";
+            check = "의도한 중단이면 정상적인 사용자 종료입니다. 의도하지 않았다면 터미널이나 실행 환경에서 SIGINT를 보낸 경로를 확인하세요.";
             break;
         case 9:
             signal_name = "SIGKILL";
