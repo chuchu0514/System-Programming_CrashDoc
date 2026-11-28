@@ -51,7 +51,7 @@ static int connect_server(const struct server_address *address)
 
     /* 연결·송신 시간과 서버 응답 대기 시간은 별도로 둔다. */
     const struct timeval send_timeout = { .tv_sec = 5 };
-    const struct timeval response_timeout = { .tv_sec = 20 };
+    const struct timeval response_timeout = { .tv_sec = 610 };
     int fd = -1;
     for (struct addrinfo *entry = addresses; entry; entry = entry->ai_next) {
         fd = socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);

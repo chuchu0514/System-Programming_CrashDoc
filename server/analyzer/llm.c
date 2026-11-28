@@ -15,7 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PROMPT_CAP 14000
+#define PROMPT_CAP 18000
 #define REQUEST_CAP 100000
 #define RESPONSE_CAP 65536
 
@@ -376,7 +376,7 @@ static int run_curl(const char *request, char *response, size_t responsesz)
     struct timespec start;
     char *const argv[] = {
         (char *)"curl", (char *)"--silent", (char *)"--fail",
-        (char *)"--max-time", (char *)"15", (char *)"-H",
+        (char *)"--max-time", (char *)"600", (char *)"-H",
         (char *)"Content-Type: application/json", (char *)"--data-binary",
         (char *)request, (char *)"http://localhost:11434/api/generate", NULL
     };
@@ -424,7 +424,7 @@ static int run_curl(const char *request, char *response, size_t responsesz)
             failed = 1;
             break;
         }
-        remaining = 15000LL - ((long long)(now.tv_sec - start.tv_sec) * 1000LL +
+        remaining = 600000LL - ((long long)(now.tv_sec - start.tv_sec) * 1000LL +
                     (long long)(now.tv_nsec - start.tv_nsec) / 1000000LL);
         if (remaining <= 0) {
             failed = 1;
@@ -515,7 +515,8 @@ static int ollama_request(const char *prompt, char *out, size_t outsz)
     if (json_escape(prompt, escaped, REQUEST_CAP) != 0)
         goto done;
     n = snprintf(request, REQUEST_CAP,
-                 "{\"model\":\"qwen3.5:9b\",\"prompt\":\"%s\",\"stream\":false}",
+                 "{\"model\":\"qwen3.5:9b\",\"prompt\":\"%s\",\"stream\":false,"
+                 "\"think\":false,\"options\":{\"num_predict\":512}}",
                  escaped);
     if (n < 0 || (size_t)n >= REQUEST_CAP)
         goto done;
@@ -535,29 +536,91 @@ done:
 static void add_instructions(char *prompt, size_t promptsz, size_t *used)
 {
     int n = snprintf(prompt + *used, promptsz - *used,
-                     "\n분석 지침: 전달된 정보에 근거해서만 분석하세요. 확인되지 않은 함수명이나 코드 줄을 만들지 마세요. 소스코드가 없다면 코드 위치를 단정하지 마세요. 추정과 확인된 사실을 구분하고 초보자가 이해하기 쉽게 설명하세요. 해결을 위해 점검할 항목을 구체적으로 제시하세요. 한국어로 [오류 분석 결과] 또는 [컴파일 오류 분석], 원인 추정, 발생 위치(확인된 경우), 점검 형식으로 답하세요.");
+                     "\n최종 답변 작성 지침: 원본 입력과 규칙 기반 1차 결과를 합쳐"
+                     " 사용자에게 보여줄 하나의 최종 분석문을 작성하세요."
+                     " 규칙 결과와 LLM 검토를 별도 블록으로 나누거나 반복하지 마세요."
+                     " 실행 결과(시그널, 종료 코드, 시간 초과)와 GCC 진단 및 소스 코드를"
+                     " 확인 가능한 사실의 기준으로 삼으세요."
+                     " 규칙 결과의 분류가 이 사실과 일치하면 그 분류와 핵심 내용을 유지하고,"
+                     " LLM의 추측만으로 이를 뒤집지 마세요."
+                     " 실행 정보와 규칙 결과가 충돌하면 실행 정보를 기준으로 판단하고"
+                     " 확인할 수 없는 내용은 불확실하다고 밝히세요."
+                     " 시그널 종료와 종료 코드 종료를 구분하세요."
+                     " 종료 코드가 0이 아니면 시그널 종료라고 하지 말고, 성공 종료라고 단정하지도 마세요."
+                     " 종료 코드가 뜻하는 프로그램별 의미는 코드나 진단으로 확인되는 범위에서만 설명하세요."
+                     " 소스 코드가 있으면 실제 오류가 발생한 파일, 줄 번호, 코드 근거를 짚고"
+                     " 그 코드 상태에 맞는 수정 방법을 제안하세요. 번호가 붙은 소스의 줄 번호를 사용하세요."
+                     " 오류를 일으킨 문장이 실행되지 않았다고 단정하지 마세요."
+                     " 예를 들어 널 포인터가 이미 NULL이면 할당을 제거하라고 하지 말고,"
+                     " 유효한 주소를 대입하거나 역참조 전에 널 검사를 하도록 제안하세요."
+                     " raise 또는 abort처럼 코드가 종료를 직접 요청한 경우 그 사실을 설명하세요."
+                     " 테스트 코드임이 드러나면 테스트 목적과 제품 코드의 수정 제안을 구분하고,"
+                     " 재현 동작을 무조건 제거하라고 하지 마세요."
+                     " 수정 제안은 실제 오류 원인과 연결하고 서로 모순되지 않게 작성하세요."
+                     " 소스가 없으면 고칠 줄을 특정할 수 없다고 밝히세요."
+                     " 제공되지 않은 코드나 줄 번호는 추측하지 마세요."
+                     " 한국어로 오류 유형, 근거가 있는 원인, 수정 위치와 방법을 한 흐름으로"
+                     " 3~5문장 안에 쓰세요. 불필요한 전문 용어와 오타를 피하세요.");
     if (n > 0 && (size_t)n < promptsz - *used)
         *used += (size_t)n;
     else
         *used = promptsz;
 }
 
-int llm_analyze_crash(const crash_info *in, char *out, size_t outsz)
+/* Number source lines so the model can cite an actual location to fix. */
+static void number_source_lines(const char *source, char *out, size_t outsz)
+{
+    const char *p = source;
+    size_t used = 0;
+    size_t line_no = 1;
+
+    if (source == NULL || out == NULL || outsz == 0)
+        return;
+    while (*p != '\0' && used + 1 < outsz) {
+        const char *end = strchr(p, '\n');
+        size_t len = end == NULL ? strlen(p) : (size_t)(end - p);
+        int is_file_header = len >= 8 && strncmp(p, "--- ", 4) == 0 &&
+                             memcmp(p + len - 4, " ---", 4) == 0;
+        int n;
+
+        if (is_file_header) {
+            n = snprintf(out + used, outsz - used, "%.*s\n", (int)len, p);
+            line_no = 1;
+        } else {
+            n = snprintf(out + used, outsz - used, "%4zu | %.*s\n",
+                         line_no++, (int)len, p);
+        }
+        if (n < 0 || (size_t)n >= outsz - used)
+            break;
+        used += (size_t)n;
+        if (end == NULL)
+            break;
+        p = end + 1;
+    }
+    out[used] = '\0';
+}
+
+int llm_analyze_crash(const crash_info *in, const char *rule_result,
+                      char *out, size_t outsz)
 {
     char prompt[PROMPT_CAP];
+    char numbered_source[8192];
     int n;
     size_t used;
 
-    if (in == NULL || out == NULL || outsz == 0)
+    if (in == NULL || rule_result == NULL || out == NULL || outsz == 0)
         return -1;
+    number_source_lines(in->source_code, numbered_source, sizeof(numbered_source));
     n = snprintf(prompt, sizeof(prompt),
-                 "크래시 분석을 수행하세요. 실제 수집된 실행 정보만 전달합니다.\n"
+                 "크래시를 분석해 최종 사용자용 답변을 만드세요.\n"
+                 "시그널 번호는 확정 사실입니다. 8은 SIGFPE, 11은 SIGSEGV입니다.\n"
                  "실행 명령: %.255s\n시그널 번호: %d\n종료 코드: %d\n"
                  "Timeout 여부: %s\n실행 시간: %ld ms\n최대 메모리 사용량: %ld KB\n"
-                 "마지막 출력:\n%.4095s\n",
+                 "마지막 출력:\n%.1000s\n\n규칙 기반 1차 분석 결과:\n%.3000s\n"
+                 "\n실행 파일과 연결된 소스 코드(없으면 비어 있음):\n%.8191s\n",
                  in->cmd, in->signo, in->exit_code,
                  in->timed_out ? "예" : "아니오", in->elapsed_ms,
-                 in->maxrss_kb, in->last_output);
+                 in->maxrss_kb, in->last_output, rule_result, numbered_source);
     if (n < 0 || (size_t)n >= sizeof(prompt))
         return -1;
     used = (size_t)n;
@@ -567,17 +630,25 @@ int llm_analyze_crash(const crash_info *in, char *out, size_t outsz)
     return ollama_request(prompt, out, outsz);
 }
 
-int llm_analyze_build(const char *error_text, char *out, size_t outsz)
+int llm_analyze_build(const char *error_text, const char *rule_result,
+                      const char *source_code, char *out, size_t outsz)
 {
     char prompt[PROMPT_CAP];
+    char numbered_source[16384];
     int n;
     size_t used;
 
-    if (error_text == NULL || out == NULL || outsz == 0)
+    if (error_text == NULL || rule_result == NULL || source_code == NULL ||
+        out == NULL || outsz == 0)
         return -1;
+    number_source_lines(source_code, numbered_source, sizeof(numbered_source));
     n = snprintf(prompt, sizeof(prompt),
-                 "GCC 컴파일 또는 링크 오류를 분석하세요. 실제 전달된 오류 메시지:\n%.12000s\n",
-                 error_text);
+                 "GCC 컴파일 또는 링크 오류의 최종 사용자용 분석을 작성하세요.\n"
+                 "실제 전달된 오류 메시지:\n%.6000s\n\n"
+                 "규칙 기반 1차 분석 결과:\n%.2000s\n\n"
+                 "컴파일 명령에 포함된 줄 번호가 붙은 소스 코드(없을 수 있음):\n%.4000s\n"
+                 "소스 코드가 있으면 진단 위치와 연결해 실제 원인을 설명하세요.\n",
+                 error_text, rule_result, numbered_source);
     if (n < 0 || (size_t)n >= sizeof(prompt))
         return -1;
     used = (size_t)n;

@@ -93,17 +93,30 @@ int recv_msg(int fd, uint8_t *type, char *body, uint32_t bodysz)
 
 int crash_info_encode(const crash_info *in, char *out, size_t outsz)
 {
-    int n = snprintf(out, outsz,
+    size_t source_len, output_len;
+    int n;
+
+    if (in == NULL || out == NULL || outsz == 0)
+        return -1;
+    source_len = strnlen(in->source_code, sizeof(in->source_code));
+    output_len = strnlen(in->last_output, sizeof(in->last_output));
+    if (source_len >= sizeof(in->source_code) ||
+        output_len >= sizeof(in->last_output))
+        return -1;
+    n = snprintf(out, outsz,
                      "cmd=%s\n"
                      "signal=%d\n"
                      "exit_code=%d\n"
                      "timed_out=%d\n"
                      "elapsed_ms=%ld\n"
                      "maxrss_kb=%ld\n"
+                     "source_len=%zu\n"
+                     "last_output_len=%zu\n"
                      "\n"                  /* 빈 줄 = 헤더 끝 */
-                     "%s",                 /* 마지막 출력 원문 */
+                     "%s%s",                /* 소스 코드 뒤에 마지막 출력 */
                      in->cmd, in->signo, in->exit_code, in->timed_out,
-                     in->elapsed_ms, in->maxrss_kb, in->last_output);
+                     in->elapsed_ms, in->maxrss_kb, source_len, output_len,
+                     in->source_code, in->last_output);
 
     if (n < 0 || (size_t)n >= outsz)   /* 에러거나 잘림 */
         return -1;
@@ -116,15 +129,17 @@ int crash_info_decode(const char *body, crash_info *out)
     char hdr[1024];                 
     size_t hlen;                    
     char *line, *save, *eq;         
+    size_t source_len = 0, output_len = 0;
+    int has_source_len = 0, has_output_len = 0;
+
+    if (body == NULL || out == NULL)
+        return -1;
 
     memset(out, 0, sizeof(*out));          /* 전부 0으로 */
 
     sep = strstr(body, "\n\n");            /* 빈 줄 찾기, 여기가 헤더 끝*/
     if (sep == NULL)
         return -1;                         /* 없으면 형식 오류 */
-
-    snprintf(out->last_output, sizeof(out->last_output),
-             "%s", sep + 2);               /* 마지막 출력 */
 
     hlen = (size_t)(sep - body);           /* 헤더 길이 */
     if (hlen >= sizeof(hdr))
@@ -153,7 +168,35 @@ int crash_info_decode(const char *body, crash_info *out)
             out->elapsed_ms = atol(eq + 1);
         else if (strcmp(line, "maxrss_kb") == 0)
             out->maxrss_kb = atol(eq + 1);
+        else if (strcmp(line, "source_len") == 0) {
+            char *end;
+            unsigned long value = strtoul(eq + 1, &end, 10);
+            if (end == eq + 1 || *end != '\0' || value >= sizeof(out->source_code))
+                return -1;
+            source_len = (size_t)value;
+            has_source_len = 1;
+        } else if (strcmp(line, "last_output_len") == 0) {
+            char *end;
+            unsigned long value = strtoul(eq + 1, &end, 10);
+            if (end == eq + 1 || *end != '\0' || value >= sizeof(out->last_output))
+                return -1;
+            output_len = (size_t)value;
+            has_output_len = 1;
+        }
       
+    }
+
+    if (has_source_len || has_output_len) {
+        size_t payload_len = strlen(sep + 2);
+        if (!has_source_len || !has_output_len ||
+            source_len + output_len != payload_len)
+            return -1;
+        memcpy(out->source_code, sep + 2, source_len);
+        out->source_code[source_len] = '\0';
+        memcpy(out->last_output, sep + 2 + source_len, output_len);
+        out->last_output[output_len] = '\0';
+    } else {
+        snprintf(out->last_output, sizeof(out->last_output), "%s", sep + 2);
     }
     return 0;
 }
