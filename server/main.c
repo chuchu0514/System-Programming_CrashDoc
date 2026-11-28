@@ -60,14 +60,33 @@ static int handle_analyze(const char *body, const char *ip, char *out, size_t ou
     stats_crash(ci.signo);
     if (analyze_crash(&ci, out, outsz) < 0)    /* 분석 결과를 out에 */
         return -1;
-    store_save(&ci, out, ip);           /* 기록 저장 */
+    if (store_save(&ci, out, ip) < 0) { /* 분석 결과와 실행 정보 기록 */
+        log_msg("기록 저장 실패 %s", ip);
+        return -1;
+    }
     return 0;
 }
 
 /* BUILD: gcc 에러 텍스트 → 분석 */
 static int handle_build(const char *body, char *out, size_t outsz)
 {
-    return analyze_build(body, out, outsz);
+    const char *marker = strstr(body, MSG_BUILD_SOURCE_MARKER);
+    char *diagnostics;
+    size_t diagnostic_len;
+    int result;
+
+    if (marker == NULL)
+        return analyze_build(body, out, outsz);
+    diagnostic_len = (size_t)(marker - body);
+    diagnostics = malloc(diagnostic_len + 1);
+    if (diagnostics == NULL)
+        return -1;
+    memcpy(diagnostics, body, diagnostic_len);
+    diagnostics[diagnostic_len] = '\0';
+    result = analyze_build_with_source(
+        diagnostics, marker + strlen(MSG_BUILD_SOURCE_MARKER), out, outsz);
+    free(diagnostics);
+    return result;
 }
 
 /* HISTORY: 최근 n개 목록 */
@@ -122,7 +141,12 @@ static void *handle_client(void *arg)
     }
 
     if (r == 0) {
-        if (send_msg(fd, MSG_RESULT, out, strlen(out)) < 0)
+        size_t out_len = strlen(out);
+        if (out_len > 0 && out[out_len - 1] != '\n' && out_len < sizeof(out) - 1) {
+            out[out_len++] = '\n';
+            out[out_len] = '\0';
+        }
+        if (send_msg(fd, MSG_RESULT, out, (uint32_t)out_len) < 0)
             log_msg("송신 실패 %s (손님이 먼저 끊음)", ip);
     } else {
         static const char err[] = "서버가 요청을 처리하지 못했습니다\n";
@@ -168,6 +192,8 @@ int main(int argc, char *argv[])
             return 1;
         }
     }
+
+    analyzer_init(use_llm);
 
     if (log_open() < 0) {
         perror("log_open");

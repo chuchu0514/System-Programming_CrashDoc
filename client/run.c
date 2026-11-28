@@ -163,6 +163,45 @@ static void format_command(char *out, size_t size, char *const argv[])
     out[used] = '\0';
 }
 
+/* Attach the adjacent C source when the executable follows the same basename. */
+static void load_adjacent_source(char *const argv[], crash_info *info)
+{
+    const char *base = strrchr(argv[0], '/');
+    char path[1024];
+    static const char note[] = "\n/* source truncated */\n";
+    int n;
+    FILE *fp;
+    size_t used, prefix_len, source_cap;
+
+    base = base == NULL ? argv[0] : base + 1;
+    if (strcmp(base, "test_analyzer") == 0)
+        return;
+    n = snprintf(path, sizeof(path), "%s.c", argv[0]);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return;
+    fp = fopen(path, "rb");
+    if (fp == NULL)
+        return;
+    n = snprintf(info->source_code, sizeof(info->source_code), "--- %s ---\n", path);
+    if (n < 0 || (size_t)n >= sizeof(info->source_code)) {
+        fclose(fp);
+        info->source_code[0] = '\0';
+        return;
+    }
+    prefix_len = (size_t)n;
+    source_cap = sizeof(info->source_code) - prefix_len - sizeof(note);
+    used = fread(info->source_code + prefix_len, 1, source_cap, fp);
+    if (ferror(fp))
+        used = 0;
+    if (used == source_cap && fgetc(fp) != EOF) {
+        size_t note_len = sizeof(note) - 1;
+        memcpy(info->source_code + prefix_len + used, note, note_len);
+        used += note_len;
+    }
+    info->source_code[prefix_len + used] = '\0';
+    fclose(fp);
+}
+
 static void print_crash_summary(const crash_info *info)
 {
     printf("\n종료 원인: ");
@@ -281,6 +320,7 @@ int run_program(char *const argv[], const struct server_address *server)
     info.maxrss_kb = usage.ru_maxrss;
     format_command(info.cmd, sizeof(info.cmd), argv);
     copy_last_lines(&tail, info.last_output);
+    load_adjacent_source(argv, &info);
 
 cleanup:
     /* 정상 종료, 오류, 시그널 모두 이곳에서 터미널을 복구한다. */

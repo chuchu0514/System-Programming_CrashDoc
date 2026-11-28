@@ -10,6 +10,7 @@ typedef struct {
     int  timed_out;         /* 멈춤 감지로 crashdoc이 죽였으면 1 */
     long elapsed_ms;        /* 실행 시간 (밀리초) */
     long maxrss_kb;         /* 최대 메모리 (KB, wait4의 ru_maxrss) */
+    char source_code[4096]; /* 실행 파일과 연결된 소스 일부, 없으면 빈 문자열 */
     char last_output[4096]; /* 마지막 출력 N줄, 없으면 빈 문자열 */
 } crash_info;
 

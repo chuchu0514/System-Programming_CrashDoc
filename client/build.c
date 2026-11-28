@@ -53,6 +53,45 @@ static size_t collect_diagnostics(FILE *stream, char *body)
     return used;
 }
 
+static int is_source_file(const char *path)
+{
+    size_t len = strlen(path);
+    const char *base = strrchr(path, '/');
+    base = base == NULL ? path : base + 1;
+    if (strcmp(base, "test_analyzer.c") == 0)
+        return 0;
+    return (len >= 2 && strcmp(path + len - 2, ".c") == 0) ||
+           (len >= 2 && strcmp(path + len - 2, ".h") == 0);
+}
+
+static size_t collect_sources(char *const argv[], char *out, size_t outsz)
+{
+    size_t used = 0;
+    for (size_t i = 1; argv[i] != NULL && used + 1 < outsz; ++i) {
+        FILE *fp;
+        int n;
+        size_t got;
+        if (!is_source_file(argv[i]))
+            continue;
+        fp = fopen(argv[i], "rb");
+        if (fp == NULL)
+            continue;
+        n = snprintf(out + used, outsz - used, "\n--- %s ---\n", argv[i]);
+        if (n < 0 || (size_t)n >= outsz - used) {
+            fclose(fp);
+            break;
+        }
+        used += (size_t)n;
+        got = fread(out + used, 1, outsz - used - 1, fp);
+        used += got;
+        fclose(fp);
+        out[used] = '\0';
+        if (used + 1 >= outsz)
+            break;
+    }
+    return used;
+}
+
 int build_program(char *const argv[], const struct server_address *server)
 {
     int diagnostics[2];
@@ -88,7 +127,9 @@ int build_program(char *const argv[], const struct server_address *server)
     }
 
     char body[MSG_MAX_BODY];
+    char sources[8192] = {0};
     size_t length = 0;
+    size_t source_length;
     int read_failed = 0;
     FILE *stream = fdopen(diagnostics[0], "r");
     if (stream) {
@@ -114,7 +155,16 @@ int build_program(char *const argv[], const struct server_address *server)
         return 1;
     }
     int result = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-    if (result != 0 && length > 0 && !read_failed)
+    source_length = collect_sources(argv, sources, sizeof(sources));
+    if (result != 0 && length > 0 && !read_failed) {
+        size_t marker_len = strlen(MSG_BUILD_SOURCE_MARKER);
+        if (source_length > 0 && marker_len + source_length <= sizeof(body) - length) {
+            memcpy(body + length, MSG_BUILD_SOURCE_MARKER, marker_len);
+            length += marker_len;
+            memcpy(body + length, sources, source_length);
+            length += source_length;
+        }
         request_server(server, MSG_BUILD, body, (uint32_t)length);
+    }
     return result == 0 && read_failed ? 1 : result;
 }

@@ -17,6 +17,7 @@ enum msg_type {
 };
 
 #define MSG_MAX_BODY (64 * 1024)
+#define MSG_BUILD_SOURCE_MARKER "\n\n---CRASHDOC-SOURCE---\n"
 
 /* 메시지 하나를 끝까지 보낸다. 성공 0, 실패 -1 */
 int send_msg(int fd, uint8_t type, const char *body, uint32_t len);
